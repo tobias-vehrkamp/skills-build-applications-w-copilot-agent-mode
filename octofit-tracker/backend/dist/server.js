@@ -51,6 +51,32 @@ const sampleOverview = {
         { id: 'w3', title: 'Mobility Reset', focus: 'Flexibility', durationMinutes: 20, level: 'All levels' },
     ],
 };
+let fallbackUsers = [
+    {
+        id: 'u1',
+        name: 'Avery Johnson',
+        email: 'avery.johnson@octofit.local',
+        grade: '10',
+        points: 1240,
+        streakDays: 14,
+    },
+    {
+        id: 'u2',
+        name: 'Riley Kim',
+        email: 'riley.kim@octofit.local',
+        grade: '11',
+        points: 1175,
+        streakDays: 11,
+    },
+    {
+        id: 'u3',
+        name: 'Jordan Patel',
+        email: 'jordan.patel@octofit.local',
+        grade: '9',
+        points: 1090,
+        streakDays: 9,
+    },
+];
 app.use(cors({
     origin: true,
 }));
@@ -127,6 +153,101 @@ async function buildOverview() {
         })),
     };
 }
+function mapUserDocument(user) {
+    return {
+        id: String(user._id),
+        name: String(user.name),
+        email: String(user.email ?? ''),
+        grade: String(user.grade),
+        points: Number(user.points ?? 0),
+        streakDays: Number(user.streakDays ?? 0),
+    };
+}
+function normalizeUserPayload(payload, partial = false) {
+    const normalized = {
+        name: payload.name?.trim(),
+        email: payload.email?.trim().toLowerCase(),
+        grade: payload.grade?.trim(),
+        points: payload.points,
+        streakDays: payload.streakDays,
+    };
+    if (!partial && (!normalized.name || !normalized.email || !normalized.grade)) {
+        throw new Error('name, email and grade are required');
+    }
+    if (normalized.points !== undefined && Number.isNaN(Number(normalized.points))) {
+        throw new Error('points must be a number');
+    }
+    if (normalized.streakDays !== undefined && Number.isNaN(Number(normalized.streakDays))) {
+        throw new Error('streakDays must be a number');
+    }
+    return normalized;
+}
+async function listUsers() {
+    if (mongoose.connection.readyState !== 1) {
+        return fallbackUsers;
+    }
+    const users = await User.find().sort({ points: -1, name: 1 }).lean();
+    return users.map(mapUserDocument);
+}
+async function createUser(payload) {
+    const normalized = normalizeUserPayload(payload);
+    if (mongoose.connection.readyState !== 1) {
+        const newUser = {
+            id: `local-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+            name: normalized.name,
+            email: normalized.email,
+            grade: normalized.grade,
+            points: Number(normalized.points ?? 0),
+            streakDays: Number(normalized.streakDays ?? 0),
+        };
+        fallbackUsers = [newUser, ...fallbackUsers];
+        return newUser;
+    }
+    const user = await User.create({
+        name: normalized.name,
+        email: normalized.email,
+        grade: normalized.grade,
+        points: Number(normalized.points ?? 0),
+        streakDays: Number(normalized.streakDays ?? 0),
+    });
+    return mapUserDocument(user.toObject());
+}
+async function updateUser(id, payload) {
+    const normalized = normalizeUserPayload(payload, true);
+    if (mongoose.connection.readyState !== 1) {
+        const existing = fallbackUsers.find((user) => user.id === id);
+        if (!existing) {
+            return null;
+        }
+        const updated = {
+            ...existing,
+            ...(normalized.name ? { name: normalized.name } : {}),
+            ...(normalized.email ? { email: normalized.email } : {}),
+            ...(normalized.grade ? { grade: normalized.grade } : {}),
+            ...(normalized.points !== undefined ? { points: Number(normalized.points) } : {}),
+            ...(normalized.streakDays !== undefined ? { streakDays: Number(normalized.streakDays) } : {}),
+        };
+        fallbackUsers = fallbackUsers.map((user) => (user.id === id ? updated : user));
+        return updated;
+    }
+    const updated = await User.findByIdAndUpdate(id, {
+        ...(normalized.name ? { name: normalized.name } : {}),
+        ...(normalized.email ? { email: normalized.email } : {}),
+        ...(normalized.grade ? { grade: normalized.grade } : {}),
+        ...(normalized.points !== undefined ? { points: Number(normalized.points) } : {}),
+        ...(normalized.streakDays !== undefined ? { streakDays: Number(normalized.streakDays) } : {}),
+    }, { new: true, runValidators: true }).lean();
+    return updated ? mapUserDocument(updated) : null;
+}
+async function deleteUser(id) {
+    if (mongoose.connection.readyState !== 1) {
+        const before = fallbackUsers.length;
+        fallbackUsers = fallbackUsers.filter((user) => user.id !== id);
+        return before !== fallbackUsers.length;
+    }
+    const deleted = await User.findByIdAndDelete(id).lean();
+    return Boolean(deleted);
+}
 app.get('/api/health', (_request, response) => {
     response.json({
         status: 'ok',
@@ -145,8 +266,50 @@ app.get('/api/overview', async (_request, response, next) => {
 });
 app.get('/api/users', async (_request, response, next) => {
     try {
-        const overview = await buildOverview();
-        response.json(overview.users);
+        response.json(await listUsers());
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.post('/api/users', async (request, response, next) => {
+    try {
+        const user = await createUser(request.body);
+        response.status(201).json(user);
+    }
+    catch (error) {
+        if (error instanceof Error) {
+            response.status(400).json({ message: error.message });
+            return;
+        }
+        next(error);
+    }
+});
+app.put('/api/users/:id', async (request, response, next) => {
+    try {
+        const updated = await updateUser(request.params.id, request.body);
+        if (!updated) {
+            response.status(404).json({ message: 'User not found' });
+            return;
+        }
+        response.json(updated);
+    }
+    catch (error) {
+        if (error instanceof Error) {
+            response.status(400).json({ message: error.message });
+            return;
+        }
+        next(error);
+    }
+});
+app.delete('/api/users/:id', async (request, response, next) => {
+    try {
+        const removed = await deleteUser(request.params.id);
+        if (!removed) {
+            response.status(404).json({ message: 'User not found' });
+            return;
+        }
+        response.status(204).send();
     }
     catch (error) {
         next(error);

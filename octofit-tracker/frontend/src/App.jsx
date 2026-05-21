@@ -155,7 +155,145 @@ function Dashboard({ overview, status }) {
   )
 }
 
+function emptyUserForm() {
+  return {
+    name: '',
+    email: '',
+    grade: '',
+    points: 0,
+    streakDays: 0,
+  }
+}
+
 function Students({ overview }) {
+  const [users, setUsers] = useState(overview.users)
+  const [formState, setFormState] = useState(emptyUserForm())
+  const [editingId, setEditingId] = useState(null)
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setUsers(overview.users)
+  }, [overview.users])
+
+  useEffect(() => {
+    const controller = new AbortController()
+
+    async function loadUsers() {
+      try {
+        const response = await fetch(`${getApiBaseUrl()}/api/users`, {
+          signal: controller.signal,
+        })
+
+        if (!response.ok) {
+          throw new Error('Users request failed')
+        }
+
+        setUsers(await response.json())
+      } catch {
+        setError('Nutzer konnten nicht frisch geladen werden. Demo-Daten bleiben sichtbar.')
+      }
+    }
+
+    loadUsers()
+
+    return () => controller.abort()
+  }, [])
+
+  function resetForm() {
+    setFormState(emptyUserForm())
+    setEditingId(null)
+  }
+
+  function handleChange(event) {
+    const { name, value } = event.target
+
+    setFormState((current) => ({
+      ...current,
+      [name]: name === 'points' || name === 'streakDays' ? Number(value) : value,
+    }))
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault()
+    setSaving(true)
+    setError('')
+    setMessage('')
+
+    const method = editingId ? 'PUT' : 'POST'
+    const url = editingId
+      ? `${getApiBaseUrl()}/api/users/${editingId}`
+      : `${getApiBaseUrl()}/api/users`
+
+    try {
+      const response = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(formState),
+      })
+
+      const payload = response.status === 204 ? null : await response.json()
+
+      if (!response.ok) {
+        throw new Error(payload?.message ?? 'Speichern fehlgeschlagen')
+      }
+
+      if (editingId) {
+        setUsers((current) => current.map((user) => (user.id === editingId ? payload : user)))
+        setMessage('Profil aktualisiert.')
+      } else {
+        setUsers((current) => [payload, ...current])
+        setMessage('Profil angelegt.')
+      }
+
+      resetForm()
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : 'Speichern fehlgeschlagen')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleDelete(id) {
+    setError('')
+    setMessage('')
+
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/users/${id}`, {
+        method: 'DELETE',
+      })
+
+      if (!response.ok) {
+        const payload = await response.json()
+        throw new Error(payload?.message ?? 'Loeschen fehlgeschlagen')
+      }
+
+      setUsers((current) => current.filter((user) => user.id !== id))
+      if (editingId === id) {
+        resetForm()
+      }
+      setMessage('Profil geloescht.')
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Loeschen fehlgeschlagen')
+    }
+  }
+
+  function startEdit(user) {
+    setEditingId(user.id)
+    setFormState({
+      name: user.name,
+      email: user.email ?? '',
+      grade: user.grade,
+      points: user.points,
+      streakDays: user.streakDays,
+    })
+    setMessage('')
+    setError('')
+  }
+
   return (
     <section className="page-card">
       <SectionHeader
@@ -163,15 +301,69 @@ function Students({ overview }) {
         title="Schuelerprofile"
         text="Profile kombinieren Klasse, Punktestand und aktuelle Trainingsserie fuer schnelle Betreuung."
       />
-      <div className="profile-grid">
-        {overview.users.map((user) => (
-          <article key={user.id} className="profile-card">
-            <span className="profile-grade">Klasse {user.grade}</span>
-            <h3>{user.name}</h3>
-            <p>{user.points} Punkte</p>
-            <strong>{user.streakDays} Tage Serie</strong>
-          </article>
-        ))}
+      <div className="row g-4 align-items-start">
+        <div className="col-12 col-xl-4">
+          <form className="card border-0 shadow-sm" onSubmit={handleSubmit}>
+            <div className="card-body d-grid gap-3 text-start">
+              <h3 className="h5 mb-0">{editingId ? 'Profil bearbeiten' : 'Neues Profil'}</h3>
+              <div>
+                <label className="form-label" htmlFor="name">Name</label>
+                <input id="name" name="name" className="form-control" value={formState.name} onChange={handleChange} required />
+              </div>
+              <div>
+                <label className="form-label" htmlFor="email">E-Mail</label>
+                <input id="email" name="email" type="email" className="form-control" value={formState.email} onChange={handleChange} required />
+              </div>
+              <div>
+                <label className="form-label" htmlFor="grade">Klasse</label>
+                <input id="grade" name="grade" className="form-control" value={formState.grade} onChange={handleChange} required />
+              </div>
+              <div className="row g-3">
+                <div className="col-6">
+                  <label className="form-label" htmlFor="points">Punkte</label>
+                  <input id="points" name="points" type="number" min="0" className="form-control" value={formState.points} onChange={handleChange} />
+                </div>
+                <div className="col-6">
+                  <label className="form-label" htmlFor="streakDays">Serie</label>
+                  <input id="streakDays" name="streakDays" type="number" min="0" className="form-control" value={formState.streakDays} onChange={handleChange} />
+                </div>
+              </div>
+              {message ? <div className="alert alert-success mb-0 py-2">{message}</div> : null}
+              {error ? <div className="alert alert-warning mb-0 py-2">{error}</div> : null}
+              <div className="d-flex gap-2">
+                <button type="submit" className="btn btn-dark" disabled={saving}>
+                  {saving ? 'Speichert...' : editingId ? 'Profil speichern' : 'Profil anlegen'}
+                </button>
+                {editingId ? (
+                  <button type="button" className="btn btn-outline-secondary" onClick={resetForm}>
+                    Abbrechen
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </form>
+        </div>
+        <div className="col-12 col-xl-8">
+          <div className="profile-grid">
+            {users.map((user) => (
+              <article key={user.id} className="profile-card">
+                <span className="profile-grade">Klasse {user.grade}</span>
+                <h3>{user.name}</h3>
+                <p>{user.email}</p>
+                <p>{user.points} Punkte</p>
+                <strong>{user.streakDays} Tage Serie</strong>
+                <div className="d-flex gap-2 mt-2">
+                  <button type="button" className="btn btn-sm btn-outline-dark" onClick={() => startEdit(user)}>
+                    Bearbeiten
+                  </button>
+                  <button type="button" className="btn btn-sm btn-outline-danger" onClick={() => handleDelete(user.id)}>
+                    Loeschen
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
       </div>
     </section>
   )
